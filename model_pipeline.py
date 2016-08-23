@@ -84,31 +84,26 @@ def split_sample(df, state) :
 	# print 'Splitting sample by GWNO {}...'.format(state)
 	return df
 
-# def gam(df, indicator) : 
-# 	'''
-# 	Calls R-script for Generalized Additive Model. 
-# 	'''
-# 	print 'Checking indicator quality.'
-# 	if df[indicator].count() < 3 : 
-# 		print 'Indicator has {} observations. Cannot run GAM.'.format(df[indicator].count())
-# 	else : 
-# 		gam = robjects.r('''
-# 			# GAM Modeling with mgcv
-# 			library(mgcv)
-# 			newd <- data.frame(years)
-# 			# Load data here
-# 			gam <- gam(indicator ~ s(years, k=4), family=guassian)
-# 			gam.pred <- predict.gam(gam, newd)
-# 			gam.pred[newd$years<(min(years)-2)] <- gam.pred[newd$years==(min(years)-2)]
-# 			gam.pred[newd$years>(max(years)+2)] <- gam.pred[newd$years==(max(years)+2)]
-# 			gam.pred[gam.pred>100] <- 100
-# 			gam.pred
-# 			''')
-# 	print 'GAM modeling completed.'
-
 def gam_model(df, indicator) : 
 	'''
 	Re-constructs R-script for Generalized Additive Model.
+	GAM model object returns attributes: 
+	 [1] "coefficients"      "residuals"         "fitted.values"    
+ 	 [4] "family"            "linear.predictors" "deviance"         
+ 	 [7] "null.deviance"     "iter"              "weights"          
+	[10] "prior.weights"     "df.null"           "y"                
+	[13] "converged"         "sig2"              "edf"              
+	[16] "edf1"              "hat"               "R"                
+	[19] "boundary"          "sp"                "nsdf"             
+	[22] "Ve"                "Vp"                "rV"               
+	[25] "mgcv.conv"         "gcv.ubre"          "aic"              
+	[28] "rank"              "gcv.ubre.dev"      "scale.estimated"  
+	[31] "method"            "smooth"            "formula"          
+	[34] "var.summary"       "cmX"               "model"            
+	[37] "na.action"         "control"           "terms"            
+	[40] "pred.formula"      "pterms"            "assign"           
+	[43] "offset"            "df.residual"       "min.edf"          
+	[46] "optimizer"         "call"
 	'''
 	from rpy2.robjects import numpy2ri
 	import rpy2.robjects as robjects
@@ -142,11 +137,14 @@ Begin pipeline.
 '''
 # Load datafile.
 df = load_datafile("combined_data.dta")
+split_df = split_sample(df, 130)
+pred, model = gam_model(split_df, 'rtotal1')
+print model.names
 # Iterate through unique GWNO.
-for no in df.gwno.unique() : 
-	split_df = split_sample(df, no)
-	model, pred = gam_model(split_df, 'rtotal1')
-
+# for no in df.gwno.unique() : 
+# 	split_df = split_sample(df, no)
+# 	pred, model = gam_model(split_df, 'rtotal1')
+# 	print model
 
 
 
