@@ -31,6 +31,7 @@ base = importr('base')
 utils = importr('utils')
 numpy2ri.activate()
 mgcv = importr('mgcv')
+locpol = importr('locpol')
 
 # NOTE: Importing from R imports R-vector objects.
 # e.g., 'pi' is actually [1] 3.14... and referencing the value is pi[0]. 
@@ -94,7 +95,9 @@ def ols_reg_model(df, indicator) :
 	Run OLS regression on indicator (y), year (x), by Gleditsch-Ward Number of the state.
 	Returns predicted values as a result.
 	'''
-	out_column = pd.Series(index = df.index)
+	predicted_values = pd.Series(index = df.index)
+	model_fit_stat = pd.Series(index = df.index)
+	quad_term_sig = pd.Series(index = df.index)
 
 	for num in df.gwno.unique() : 
 		split_df = split_sample(df, num)
@@ -111,17 +114,30 @@ def ols_reg_model(df, indicator) :
 			model_pred = model.predict(x_cons)
 			model_pred = pd.Series(model_pred, index = split_df.index)
 			model_pred = pd.to_numeric(model_pred, errors='coerce')
-			
-			out_column.update(model_pred)
+			predicted_values.update(model_pred)
 
-	return out_column
+			if model.aic : 
+				model_fit_stat.update(pd.Series(model.aic, index = split_df.index))
+
+			quad_model = sm.OLS.from_formula(formula = 'y ~ np.power(x, 2) + x_cons', data=x_cons, missing='drop').fit()
+			if quad_model.pvalues[1] and quad_model.pvalues[1] <= 0.05 :
+				temp = pd.Series(1, index = split_df.index)
+				temp = pd.to_numeric(temp, errors='coerce')
+				quad_term_sig.update(temp)
+			else : 
+				temp = pd.Series(0, index = split_df.index)
+				temp = pd.to_numeric(temp, errors='coerce')
+				quad_term_sig.update(temp)
+
+	return predicted_values, quad_term_sig, model_fit_stat
 
 def loess_model(df, indicator) : 
 	'''
 	Run loess smoothing function on indicator (y), year (x), by Gleditsch-Ward
 	number of the state. Returns predicted values as a result.
 	'''
-	out_column = pd.Series(index = df.index)
+	predicted_values = pd.Series(index = df.index)
+	model_fit_stat = pd.Series(index = df.index)
 	lowess = sm.nonparametric.lowess
 
 	for num in df.gwno.unique() : 
@@ -142,9 +158,47 @@ def loess_model(df, indicator) :
 			model_pred = func(x)
 			model_pred = pd.Series(model_pred, index = split_df.index)
 			model_pred = pd.to_numeric(model_pred, errors='coerce')
+			predicted_values.update(model_pred)
 
-			out_column.update(model_pred)
+			# k = len(model_pred)
+			# loglik = -np.sum(scipy.stats.norm.logpdf({lowess_y,lowess_x}, loc=model_pred, scale=sd)) 
+			# aic = 2*k - 2*(loglik)
+			# print aic
 
+	return predicted_values
+
+def locpol_model(df, indicator) : 
+	'''
+	Re-constructs R-script for local polynomial regression.
+	'''
+	out_column = pd.Series(index = df.index)
+
+	for num in df.gwno.unique() : 
+		split_df = split_sample(df, num)
+		if split_df[indicator].count() < 2 : 
+			if DEBUGGING : 
+				print '{} observations. Cannot run LocPol.'.format(split_df[indicator].count())
+		else : 
+			y = np.array(split_df[indicator])
+			x = np.array(split_df['year'])
+			newd = robjects.DataFrame({'year' : robjects.FloatVector(y)})
+			data = robjects.DataFrame({'x' : robjects.FloatVector(x), 'year' : robjects.FloatVector(y)})
+			locpol_form = Formula('y ~ x')
+
+			env = locpol_form.environment
+			env['x'] = x
+			env['y'] = y
+			env['data'] = data
+
+			model = locpol.locpol(locpol_form, 'set.NA=TRUE')
+			print model
+			# model_pred = r.predict(model, newd)
+			
+			# model_pred = pd.Series(model_pred, index = split_df.index)
+			# model_pred = pd.to_numeric(model_pred, errors='coerce')
+			
+			# out_column.update(model_pred)
+	
 	return out_column
 
 def gam_model(df, indicator) : 
@@ -174,7 +228,8 @@ def gam_model(df, indicator) :
 	# numpy2ri.activate()
 	# mgcv = importr('mgcv')
 
-	out_column = pd.Series(index = df.index)
+	predicted_values = pd.Series(index = df.index)
+	model_fit_stat = pd.Series(index = df.index)
 
 	for num in df.gwno.unique() : 
 		split_df = split_sample(df, num)
@@ -193,13 +248,15 @@ def gam_model(df, indicator) :
 
 			model = mgcv.gam(gam_formula, 'family=gaussian')
 			model_pred = r.predict(model, newd)
-			
 			model_pred = pd.Series(model_pred, index = split_df.index)
 			model_pred = pd.to_numeric(model_pred, errors='coerce')
-			
-			out_column.update(model_pred)
+			predicted_values.update(model_pred)
+
+			model_aic = pd.Series(model[26], index = split_df.index)
+			model_aic = pd.to_numeric(model_aic, errors = 'coerce')
+			model_fit_stat.update(model_aic)
 	
-	return out_column
+	return predicted_values, model_fit_stat
 
 '''
 Begin pipeline. 
@@ -208,12 +265,18 @@ Begin pipeline.
 df = load_datafile("combined_data.dta")
 df.sort_values(['gwno', 'year'], ascending=[False, True], inplace=True)
 
-ols = ols_reg_model(df, 'rtotal1')
-gam = gam_model(df, 'rtotal1')
+ols, quad_sig, ols_fit = ols_reg_model(df, 'rtotal1')
+gam, gam_fit = gam_model(df, 'rtotal1')
 loess = loess_model(df, 'rtotal1')
+# locpol = locpol_model(df, 'rtotal1')
+
 df.loc[:,'pred_rtotal1_gam'] = gam
 df.loc[:,'pred_rtotal1_ols'] = ols
 df.loc[:,'pred_rtotal1_loess'] = loess
+
+df.loc[:,'rtotal1_quad_sig'] = quad_sig
+df.loc[:,'rtotal1_ols_fit'] = ols_fit
+df.loc[:,'rtotal1_gam_fit'] = gam_fit
 
 if '-e' in sys.argv : 
 	try : 
