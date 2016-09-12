@@ -15,10 +15,22 @@ from pandas import Series, DataFrame
 import statsmodels.api as sm 
 from sklearn.linear_model import LinearRegression
 import scipy, scipy.stats
+from scipy.interpolate import interp1d
 
 import pyqt_fit.nonparam_regression as smooth
 from pyqt_fit import npr_methods
 import matplotlib.pyplot as plt
+
+from rpy2.robjects import numpy2ri
+import rpy2.robjects as robjects
+from rpy2.robjects.packages import importr
+from rpy2.robjects import FloatVector, Formula
+
+r = robjects.r
+base = importr('base')
+utils = importr('utils')
+numpy2ri.activate()
+mgcv = importr('mgcv')
 
 # NOTE: Importing from R imports R-vector objects.
 # e.g., 'pi' is actually [1] 3.14... and referencing the value is pi[0]. 
@@ -36,8 +48,10 @@ import matplotlib.pyplot as plt
 #         ''')
 # This returns 18.85
 
-# Allows printing of entire DataFrame in terminal without breaks.
-pd.options.mode.chained_assignment = None
+DEBUGGING = False
+if DEBUGGING : 
+	# Allows printing of entire DataFrame in terminal without breaks.
+	pd.options.mode.chained_assignment = None
 
 def load_datafile(fname) : 
 	'''
@@ -59,21 +73,10 @@ def load_datafile(fname) :
 		pass
 
 	print 'Loaded {} rows.'.format(len(df))
+	if DEBUGGING : 
+		print 'Vars imported: ', list(df.columns.values)
 
 	return df
-
-def ols_reg(df, indicator) : 
-	'''
-	Run OLS regression on indicator (y), year (x), by Gleditsch-Ward Number of the state.
-	Returns fitted model as result.
-	'''
-	y = df[[indicator]][:]
-	x = df.year[:]
-	x = sm.add_constant(x)
-	model = sm.OLS(y, x, missing='drop')
-	result = model.fit()
-	print 'Fitting OLS model...'
-	return result
 
 def split_sample(df, state) : 
 	'''
@@ -82,7 +85,67 @@ def split_sample(df, state) :
 	'''
 	df = df.loc[df['gwno'] == state]
 	# print 'Splitting sample by GWNO {}...'.format(state)
+	if DEBUGGING : 
+		print list(df.columns.values)
 	return df
+
+def ols_reg_model(df, indicator) : 
+	'''
+	Run OLS regression on indicator (y), year (x), by Gleditsch-Ward Number of the state.
+	Returns predicted values as a result.
+	'''
+	out_column = pd.Series(index = df.index)
+
+	for num in df.gwno.unique() : 
+		split_df = split_sample(df, num)
+
+		if split_df[indicator].count() < 2 : 
+			if DEBUGGING : 
+				print '{} observations. Cannot run OLS.'.format(split_df[indicator].count())
+		else : 
+			y = split_df[[indicator]][:]
+			x = split_df.year[:]
+			x_cons = sm.add_constant(x)
+			model = sm.OLS(y, x_cons, missing='drop').fit()
+
+			model_pred = model.predict(x_cons)
+			model_pred = pd.Series(model_pred, index = split_df.index)
+			model_pred = pd.to_numeric(model_pred, errors='coerce')
+			
+			out_column.update(model_pred)
+
+	return out_column
+
+def loess_model(df, indicator) : 
+	'''
+	Run loess smoothing function on indicator (y), year (x), by Gleditsch-Ward
+	number of the state. Returns predicted values as a result.
+	'''
+	out_column = pd.Series(index = df.index)
+	lowess = sm.nonparametric.lowess
+
+	for num in df.gwno.unique() : 
+		split_df = split_sample(df, num)
+		if split_df[indicator].count() < 5 : 
+			if DEBUGGING : 
+				print '{} observations. Cannot run GAM.'.format(split_df[indicator].count())
+		else : 
+			y = np.array(split_df[indicator])
+			x = np.array(split_df['year'])
+
+			model = lowess(y, x)
+
+			lowess_x = list(zip(*model))[0]
+			lowess_y = list(zip(*model))[1]
+			func = interp1d(lowess_x, lowess_y, bounds_error=False)
+
+			model_pred = func(x)
+			model_pred = pd.Series(model_pred, index = split_df.index)
+			model_pred = pd.to_numeric(model_pred, errors='coerce')
+
+			out_column.update(model_pred)
+
+	return out_column
 
 def gam_model(df, indicator) : 
 	'''
@@ -105,46 +168,71 @@ def gam_model(df, indicator) :
 	[43] "offset"            "df.residual"       "min.edf"          
 	[46] "optimizer"         "call"
 	'''
-	from rpy2.robjects import numpy2ri
-	import rpy2.robjects as robjects
-	from rpy2.robjects.packages import importr
-	from rpy2.robjects import FloatVector, Formula
-	r = robjects.r
-	base = importr('base')
-	utils = importr('utils')
-	numpy2ri.activate()
+	# r = robjects.r
+	# base = importr('base')
+	# utils = importr('utils')
+	# numpy2ri.activate()
+	# mgcv = importr('mgcv')
 
-	mgcv = importr('mgcv')
-	if df[indicator].count() < 3 : 
-		print '{} observations. Cannot run GAM.'.format(df[indicator].count())
-	else : 
-		y = np.array(df[indicator])
-		x = np.array(df['year'])
-		newd = robjects.DataFrame({'year' : robjects.FloatVector(y)})
-		gam_formula = Formula('y ~ s(x, k=4)')
+	out_column = pd.Series(index = df.index)
 
-		env = gam_formula.environment
-		env['x'] = x
-		env['y'] = y
+	for num in df.gwno.unique() : 
+		split_df = split_sample(df, num)
+		if split_df[indicator].count() < 5 : 
+			if DEBUGGING : 
+				print '{} observations. Cannot run GAM.'.format(split_df[indicator].count())
+		else : 
+			y = np.array(split_df[indicator])
+			x = np.array(split_df['year'])
+			newd = robjects.DataFrame({'year' : robjects.FloatVector(y)})
+			gam_formula = Formula('y ~ s(x, k=4)')
 
-		model = mgcv.gam(gam_formula, 'family=gaussian')
-		model_pred = r.predict(model, newd)
-		print 'GAM modeling completed.'
-		return model_pred, model
+			env = gam_formula.environment
+			env['x'] = x
+			env['y'] = y
+
+			model = mgcv.gam(gam_formula, 'family=gaussian')
+			model_pred = r.predict(model, newd)
+			
+			model_pred = pd.Series(model_pred, index = split_df.index)
+			model_pred = pd.to_numeric(model_pred, errors='coerce')
+			
+			out_column.update(model_pred)
+	
+	return out_column
 
 '''
 Begin pipeline. 
 '''
 # Load datafile.
 df = load_datafile("combined_data.dta")
-split_df = split_sample(df, 130)
-pred, model = gam_model(split_df, 'rtotal1')
-print model.names
-# Iterate through unique GWNO.
-# for no in df.gwno.unique() : 
-# 	split_df = split_sample(df, no)
-# 	pred, model = gam_model(split_df, 'rtotal1')
-# 	print model
+df.sort_values(['gwno', 'year'], ascending=[False, True], inplace=True)
+
+ols = ols_reg_model(df, 'rtotal1')
+gam = gam_model(df, 'rtotal1')
+loess = loess_model(df, 'rtotal1')
+df.loc[:,'pred_rtotal1_gam'] = gam
+df.loc[:,'pred_rtotal1_ols'] = ols
+df.loc[:,'pred_rtotal1_loess'] = loess
+
+if '-e' in sys.argv : 
+	try : 
+		# filepath = sys.argv[sys.argv.index('-e')+1]
+		df.to_csv("dataframe.csv")
+		print 'Exported {} rows.'.format(len(df))
+	except IndexError : 
+		print "Error: must specify export path."
+
+'''
+Future note: preferred method of split-apply-combine data management would be to use
+the built in groupby function to apply multiple estimation techniques to multiple
+groups concurrently. However, because we are wrapping R in python and returning R code
+objects, the groupby function behaves badly. Or possibly I just don't understand groupby.
+Further investigation necessary. Sample groupby command included below.
+'''
+# df.groupby('gwno').apply(gam_model, 'rtotal1')
+
+
 
 
 
