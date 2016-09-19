@@ -98,6 +98,7 @@ def ols_reg_model(df, indicator) :
 	predicted_values = pd.Series(index = df.index)
 	model_fit_stat = pd.Series(index = df.index)
 	quad_term_sig = pd.Series(index = df.index)
+	model_class = pd.Series(index = df.index)
 
 	for num in df.gwno.unique() : 
 		split_df = split_sample(df, num)
@@ -119,6 +120,9 @@ def ols_reg_model(df, indicator) :
 			if model.aic : 
 				model_fit_stat.update(pd.Series(model.aic, index = split_df.index))
 
+			'''
+			Model with quadratic term. Get significance of quadratic term and store if significant alpha = 0.05.
+			'''
 			quad_model = sm.OLS.from_formula(formula = 'y ~ np.power(x, 2) + x_cons', data=x_cons, missing='drop').fit()
 			if quad_model.pvalues[1] and quad_model.pvalues[1] <= 0.05 :
 				temp = pd.Series(1, index = split_df.index)
@@ -129,7 +133,63 @@ def ols_reg_model(df, indicator) :
 				temp = pd.to_numeric(temp, errors='coerce')
 				quad_term_sig.update(temp)
 
-	return predicted_values, quad_term_sig, model_fit_stat
+			'''
+			Classify case by quadratic term significance, quadratic term slope, and linear term slope.
+			(1) Linear growth - If the p-value for b4 >= 0.05 and the slope b1 > 0.05 per year
+			(2) Linear decline - If the p-value for b4 >= 0.05 and the slope b1 < -0.05 per year
+			(0) No change - If the p-value for b4 >= 0.05 the slope b1 is between -0.05 and 0.05 per year
+			(3) Saturation - if the p-value for b4 < 0.05 and the slope b4 < 0 and the slope b1 > 0 and the maximum value of any data point is >= 95%
+			(4) Acceleration - if the p-value for b4 < 0.05 and the slope b4 > 0 and the slope b1 > 0
+			(5) Deceleration - if the p-value for b4 < 0.05 and the slope b4 < 0 and the slope b1 > 0 and the maximum value of all data points is < 95%
+			(6) Negative acceleration - if the p-value for b4 < 0.05 and the slope b4 < 0 and the slope b1 < 0
+			(7) Negative deceleration - if the p-value for b4 < 0.05 and the slope b4 > 0 and the slope b1 < 0
+
+			model.params[1] is slope b1 (from simple OLS model)
+			quad_model.params[1] is slope b4 (from quadratic OLS model)
+			quad_model.pvalues[1] is p-value for b4 (from quadratic OLS model)
+			'''
+			# Classify linear / no change
+			if quad_model.pvalues[1] and quad_model.pvalues[1] >= 0.05 : 
+				if model.params[1] > 0.05 : 
+					temp = pd.Series(1, index = split_df.index)
+					temp = pd.to_numeric(temp, errors='coerce')
+					model_class.update(temp)
+				if model.params[1] < -0.05 : 
+					temp = pd.Series(2, index = split_df.index)
+					temp = pd.to_numeric(temp, errors='coerce')
+					model_class.update(temp)
+				if model.params[1] >= -0.05 and model.params[1] <= 0.05 :
+					temp = pd.Series(0, index = split_df.index)
+					temp = pd.to_numeric(temp, errors='coerce')
+					model_class.update(temp)
+			else :
+				# Classify acceleration
+				if quad_model.params[1] > 0 and model.params[1] > 0 : 
+					temp = pd.Series(4, index = split_df.index)
+					temp = pd.to_numeric(temp, errors='coerce')
+					model_class.update(temp)
+				# Classify deceleration
+				if quad_model.params[1] > 0 and model.params[1] < 0 and y[indicator].max() > 95 : 
+					temp = pd.Series(5, index = split_df.index)
+					temp = pd.to_numeric(temp, errors='coerce')
+					model_class.update(temp)
+				# Classify saturation
+				if quad_model.params[1] < 0 and model.params[1] > 0 and y[indicator].max() >= 95 : 
+					temp = pd.Series(5, index = split_df.index)
+					temp = pd.to_numeric(temp, errors='coerce')
+					model_class.update(temp)
+				# Classify negative acceleration
+				if quad_model.params[1] < 0 and model.params[1] < 0 : 
+					temp = pd.Series(6, index = split_df.index)
+					temp = pd.to_numeric(temp, errors='coerce')
+					model_class.update(temp)
+				# Classify negative deceleration
+				if quad_model.params[1] > 0 and model.params[1] < 0 : 
+					temp = pd.Series(7, index = split_df.index)
+					temp = pd.to_numeric(temp, errors='coerce')
+					model_class.update(temp)
+
+	return predicted_values, quad_term_sig, model_fit_stat, model_class
 
 def loess_model(df, indicator) : 
 	'''
@@ -265,7 +325,7 @@ Begin pipeline.
 df = load_datafile("combined_data.dta")
 df.sort_values(['gwno', 'year'], ascending=[False, True], inplace=True)
 
-ols, quad_sig, ols_fit = ols_reg_model(df, 'rtotal1')
+ols, quad_sig, ols_fit, model_class = ols_reg_model(df, 'rtotal1')
 gam, gam_fit = gam_model(df, 'rtotal1')
 loess = loess_model(df, 'rtotal1')
 # locpol = locpol_model(df, 'rtotal1')
@@ -277,6 +337,8 @@ df.loc[:,'pred_rtotal1_loess'] = loess
 df.loc[:,'rtotal1_quad_sig'] = quad_sig
 df.loc[:,'rtotal1_ols_fit'] = ols_fit
 df.loc[:,'rtotal1_gam_fit'] = gam_fit
+
+df.loc[:,'model_class'] = model_class
 
 if '-e' in sys.argv : 
 	try : 

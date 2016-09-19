@@ -1,0 +1,9 @@
+Classify case by quadratic term significance, quadratic term slope, and linear term slope.
+(1) Linear growth - If the p-value for b4 >= 0.05 and the slope b1 > 0.05 per year
+(2) Linear decline - If the p-value for b4 >= 0.05 and the slope b1 < -0.05 per year
+(0) No change - If the p-value for b4 >= 0.05 the slope b1 is between -0.05 and 0.05 per year
+(3) Saturation - if the p-value for b4 < 0.05 and the slope b4 < 0 and the slope b1 > 0 and the maximum value of any data point is >= 95%
+(4) Acceleration - if the p-value for b4 < 0.05 and the slope b4 > 0 and the slope b1 > 0
+(5) Deceleration - if the p-value for b4 < 0.05 and the slope b4 < 0 and the slope b1 > 0 and the maximum value of all data points is < 95%
+(6) Negative acceleration - if the p-value for b4 < 0.05 and the slope b4 < 0 and the slope b1 < 0
+(7) Negative deceleration - if the p-value for b4 < 0.05 and the slope b4 > 0 and the slope b1 < 0
